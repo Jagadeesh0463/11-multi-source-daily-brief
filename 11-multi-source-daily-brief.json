@@ -1,0 +1,307 @@
+{
+  "name": "11-multi-source-daily-brief",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1-5"
+            }
+          ]
+        }
+      },
+      "id": "a1000001-0001-0001-0001-000000000001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 460]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "{{GOOGLE_SHEETS_DOCUMENT_ID}}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Sheet1",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1000002-0002-0002-0002-000000000002",
+      "name": "Google Sheets - Get Updates",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [500, 260],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "placeholder",
+          "name": "{{GOOGLE_SHEETS_CREDENTIAL}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "returnAll": false,
+        "limit": 20,
+        "filters": {
+          "q": "newer_than:1d"
+        },
+        "options": {}
+      },
+      "id": "a1000003-0003-0003-0003-000000000003",
+      "name": "Gmail - Get Newsletters",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [500, 460],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "placeholder",
+          "name": "{{GMAIL_CREDENTIAL}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": {
+          "__rl": true,
+          "value": "{{NOTION_DATABASE_ID}}",
+          "mode": "id"
+        },
+        "returnAll": false,
+        "limit": 10,
+        "options": {}
+      },
+      "id": "a1000004-0004-0004-0004-000000000004",
+      "name": "Notion - Get Updated Pages",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [500, 660],
+      "credentials": {
+        "notionApi": {
+          "id": "placeholder",
+          "name": "{{NOTION_CREDENTIAL}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "getAll",
+        "channel": "{{SLACK_CHANNEL_ID}}",
+        "returnAll": false,
+        "limit": 50,
+        "filters": {
+          "oldest": "={{Math.floor((Date.now() - 86400000) / 1000)}}"
+        },
+        "options": {}
+      },
+      "id": "a1000005-0005-0005-0005-000000000005",
+      "name": "Slack - Get Messages",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [500, 860],
+      "credentials": {
+        "slackApi": {
+          "id": "placeholder",
+          "name": "{{SLACK_API_CREDENTIAL}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "a1000006-0006-0006-0006-000000000006",
+      "name": "Merge A - Sheets + Gmail",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [780, 360]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "a1000007-0007-0007-0007-000000000007",
+      "name": "Merge B - Notion + Slack",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [780, 760]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "a1000008-0008-0008-0008-000000000008",
+      "name": "Merge C - All Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1040, 560]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const allItems = $input.all();\n\n// ── GUARD: No content from any source ──────────────────────────\nif (!allItems || allItems.length === 0) {\n  throw new Error('NO_CONTENT: No data received from any source. Stopping workflow.');\n}\n\nconst MAX_TOTAL_CHARS = 12000;\nconst MAX_ITEM_CHARS  = 200;\nconst NOISE_REGEX = /^(hi|hello|hey|thanks|thank you|ok|okay|good morning|good afternoon|lgtm|noted|sure|👍|✅|🙏|\\+1)$/i;\n\nlet lines      = [];\nlet totalChars = 0;\n\nfor (const item of allItems) {\n  const data = item.json;\n  let source  = 'UNKNOWN';\n  let content = '';\n\n  // ── Detect source by data shape ─────────────────────────────\n  if (data.text !== undefined && data.ts !== undefined) {\n    source  = 'SLACK';\n    content = data.text || '';\n\n  } else if (data.object === 'page' || data.parent !== undefined) {\n    source = 'NOTION';\n    const props     = data.properties || {};\n    const titleProp = props.Name || props.title || props.Title;\n    content = titleProp?.title?.[0]?.plain_text\n           || titleProp?.rich_text?.[0]?.plain_text\n           || 'Untitled Notion page';\n\n  } else if (data.snippet !== undefined || data.labelIds !== undefined) {\n    source  = 'GMAIL';\n    content = (data.subject || 'No Subject') + ': ' + (data.snippet || '');\n\n  } else {\n    source  = 'SHEETS';\n    content = Object.entries(data)\n      .filter(([k]) => !['row', 'rowNumber', '__ROW_NUMBER__'].includes(k))\n      .map(([k, v]) => k + ': ' + v)\n      .join(' | ');\n  }\n\n  // ── Clean ───────────────────────────────────────────────────\n  content = content\n    .replace(/<[^>]*>/g, '')\n    .replace(/https?:\\/\\/[^\\s]+/g, '[link]')\n    .replace(/\\s+/g, ' ')\n    .trim();\n\n  if (content.length < 5) continue;\n  if (NOISE_REGEX.test(content)) continue;\n\n  if (content.length > MAX_ITEM_CHARS) {\n    content = content.substring(0, MAX_ITEM_CHARS) + '...';\n  }\n\n  const line = '[' + source + '] ' + content;\n  if (totalChars + line.length > MAX_TOTAL_CHARS) break;\n\n  lines.push(line);\n  totalChars += line.length;\n}\n\n// ── GUARD: Everything was noise ─────────────────────────────────\nif (lines.length === 0) {\n  throw new Error('NO_SIGNAL: All content filtered as noise. No meaningful updates found today.');\n}\n\nconst today = new Date().toLocaleDateString('en-IN', {\n  weekday : 'long',\n  year    : 'numeric',\n  month   : 'long',\n  day     : 'numeric',\n  timeZone: 'Asia/Kolkata'\n});\n\nreturn [{\n  json: {\n    combinedText: lines.join('\\n'),\n    today,\n    itemCount: lines.length\n  }\n}];"
+      },
+      "id": "a1000009-0009-0009-0009-000000000009",
+      "name": "Code - Clean & Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1300, 560]
+    },
+    {
+      "parameters": {
+        "prompt": "={{ 'Date: ' + $json.today + '\\n\\nRaw inputs to synthesize:\\n' + $json.combinedText }}",
+        "messages": {
+          "messageValues": [
+            {
+              "type": "SystemMessage",
+              "message": "You are a professional executive assistant creating a concise morning briefing.\n\nYou will receive raw inputs tagged with their source: [SLACK], [NOTION], [GMAIL], [SHEETS].\n\nYOUR TASK:\n1. CLUSTER by TOPIC not by source — if Slack and Notion both mention the same project, merge them under one topic heading.\n2. Separate ACTION ITEMS (needs decision or response today) from informational updates.\n3. SUPPRESS noise — no trivial updates, greetings, or repeated information.\n4. OUTPUT directly as clean HTML — ready to send as email body.\n\nOUTPUT FORMAT:\n\n<h2>📅 Daily Brief — {date from input}</h2>\n\n<h3>⚡ Action Items</h3>\n<ul>\n  <li><strong>[Topic]</strong> — what needs to be done [SOURCE]</li>\n</ul>\n\n<h3>📌 Key Signals</h3>\n<ul>\n  <li><strong>[Topic]</strong> — key insight [SOURCE]</li>\n</ul>\n\n<h3>📥 FYI</h3>\n<ul>\n  <li>Low priority update, no action needed [SOURCE]</li>\n</ul>\n\nRULES:\n- Maximum 500 words total.\n- Every bullet must cite its source in brackets.\n- If no action items exist write: <p>No action items today. ✅</p>\n- If input is sparse write a shorter brief — do not pad.\n- Never invent information not present in the input.\n- Return only the HTML. No markdown, no backticks, no explanation."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1000010-0010-0010-0010-000000000010",
+      "name": "Basic LLM Chain",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [1560, 560]
+    },
+    {
+      "parameters": {
+        "model": "llama-3.1-70b-versatile",
+        "options": {}
+      },
+      "id": "a1000011-0011-0011-0011-000000000011",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [1560, 760],
+      "credentials": {
+        "groqApi": {
+          "id": "placeholder",
+          "name": "{{GROQ_API_CREDENTIAL}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "{{YOUR_EMAIL_ADDRESS}}",
+        "subject": "={{ '📅 Daily Brief — ' + $('Code - Clean & Check').item.json.today }}",
+        "emailType": "html",
+        "message": "={{ ($json.text && $json.text.trim().length > 20) ? $json.text : '<p>No significant updates today.</p>' }}",
+        "options": {}
+      },
+      "id": "a1000012-0012-0012-0012-000000000012",
+      "name": "Gmail - Send Brief",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1820, 560],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "placeholder",
+          "name": "{{GMAIL_CREDENTIAL}}"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "create",
+        "databaseId": {
+          "__rl": true,
+          "value": "{{NOTION_BRIEFS_DATABASE_ID}}",
+          "mode": "id"
+        },
+        "title": "={{ 'Brief — ' + $('Code - Clean & Check').item.json.today }}",
+        "propertiesUi": {
+          "propertyValues": []
+        },
+        "blockUi": {
+          "blockValues": [
+            {
+              "type": "paragraph",
+              "textContent": "={{ $('Basic LLM Chain').item.json.text || 'No content generated.' }}"
+            }
+          ]
+        }
+      },
+      "id": "a1000013-0013-0013-0013-000000000013",
+      "name": "Notion - Archive Brief",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2.2,
+      "position": [2080, 560],
+      "credentials": {
+        "notionApi": {
+          "id": "placeholder",
+          "name": "{{NOTION_CREDENTIAL}}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          { "node": "Google Sheets - Get Updates", "type": "main", "index": 0 },
+          { "node": "Gmail - Get Newsletters",     "type": "main", "index": 0 },
+          { "node": "Notion - Get Updated Pages",  "type": "main", "index": 0 },
+          { "node": "Slack - Get Messages",        "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Google Sheets - Get Updates": {
+      "main": [[ { "node": "Merge A - Sheets + Gmail", "type": "main", "index": 0 } ]]
+    },
+    "Gmail - Get Newsletters": {
+      "main": [[ { "node": "Merge A - Sheets + Gmail", "type": "main", "index": 1 } ]]
+    },
+    "Notion - Get Updated Pages": {
+      "main": [[ { "node": "Merge B - Notion + Slack", "type": "main", "index": 0 } ]]
+    },
+    "Slack - Get Messages": {
+      "main": [[ { "node": "Merge B - Notion + Slack", "type": "main", "index": 1 } ]]
+    },
+    "Merge A - Sheets + Gmail": {
+      "main": [[ { "node": "Merge C - All Sources", "type": "main", "index": 0 } ]]
+    },
+    "Merge B - Notion + Slack": {
+      "main": [[ { "node": "Merge C - All Sources", "type": "main", "index": 1 } ]]
+    },
+    "Merge C - All Sources": {
+      "main": [[ { "node": "Code - Clean & Check", "type": "main", "index": 0 } ]]
+    },
+    "Code - Clean & Check": {
+      "main": [[ { "node": "Basic LLM Chain", "type": "main", "index": 0 } ]]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [[ { "node": "Basic LLM Chain", "type": "ai_languageModel", "index": 0 } ]]
+    },
+    "Basic LLM Chain": {
+      "main": [[ { "node": "Gmail - Send Brief", "type": "main", "index": 0 } ]]
+    },
+    "Gmail - Send Brief": {
+      "main": [[ { "node": "Notion - Archive Brief", "type": "main", "index": 0 } ]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true,
+    "errorWorkflow": ""
+  },
+  "versionId": "11-daily-brief-v2"
+}
